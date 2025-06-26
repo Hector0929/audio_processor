@@ -208,7 +208,7 @@ if __name__ == "__main__":
     # 您可以根據需要調整這些參數
     splitter = AudioSplitter(
         snr_threshold_db=30,      # SNR 閾值：高於 30dB 才裁切 (您可以嘗試降低這個值)
-        frame_ms=10,              # 每 50 毫秒計算一次 SNR
+        frame_ms=50,              # 每 50 毫秒計算一次 SNR
         noise_estimation_ms=500,  # 使用音頻前 500 毫秒估計噪聲
         target_dbfs=-40.0,        # 標準化音頻到 -40 dBFS 的響度
         output_dir="segments_loudness_processed" # 輸出文件夾名稱
