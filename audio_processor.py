@@ -3,6 +3,7 @@ import numpy as np
 import math
 from pydub import AudioSegment
 
+
 class AudioSplitter:
     """
     一個用於根據 SNR 閾值自動切割音頻文件的類。
