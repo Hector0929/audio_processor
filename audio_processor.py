@@ -1,7 +1,19 @@
 import os
 import numpy as np
 import math
-from pydub import AudioSegment
+import logging
+try:
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+except ImportError:
+    print("錯誤：缺少必要的函式庫。請執行 'pip install pydub numpy' 來安裝。")
+    print("提醒：pydub 需要 FFmpeg。請確保您已經安裝 FFmpeg 並將其路徑加入系統環境變數中。")
+    exit()
+
+# --- 設定日誌記錄 ---
+# 設定日誌的等級為 INFO，並定義輸出的格式
+# 這將確保 logging.info() 的訊息能夠顯示在終端機中
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class AudioSplitter:
@@ -33,7 +45,7 @@ class AudioSplitter:
         # 確保輸出目錄存在
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
-            print(f"創建輸出目錄: {self.output_dir}")
+            logging.info(f"建立輸出目錄: {self.output_dir}")
 
     def _calculate_rms(self, samples: np.ndarray) -> float:
         """
@@ -64,14 +76,14 @@ class AudioSplitter:
         current_loudness_dbfs = audio_segment.dBFS 
         
         if math.isinf(current_loudness_dbfs) and current_loudness_dbfs < 0: # 處理靜音音頻的 dBFS 為 -inf 的情況
-            print("警告：音頻為靜音或接近靜音，無法有效標準化 dBFS。返回原始音頻。")
+            logging.warning("警告：音頻為靜音或接近靜音，無法有效標準化 dBFS。返回原始音頻。")
             return audio_segment
         
         # 使用 self.target_dbfs 作為目標響度
         gain_to_apply_db = self.target_dbfs - current_loudness_dbfs
         
         normalized_audio = audio_segment.apply_gain(gain_to_apply_db)
-        print(f"音頻已標準化。原始 dBFS: {current_loudness_dbfs:.2f}, 調整增益: {gain_to_apply_db:.2f} dB, 最終 dBFS (目標: {self.target_dbfs:.2f}): {normalized_audio.dBFS:.2f}")
+        logging.info(f"音頻已標準化。原始 dBFS: {current_loudness_dbfs:.2f}, 調整增益: {gain_to_apply_db:.2f} dB, 最終 dBFS (目標: {self.target_dbfs:.2f}): {normalized_audio.dBFS:.2f}")
         return normalized_audio
 
     def split_audio(self, audio_path: str):
@@ -82,18 +94,18 @@ class AudioSplitter:
             audio_path (str): 輸入音頻文件的路徑。
         """
         if not os.path.exists(audio_path):
-            print(f"錯誤：音頻文件不存在於此路徑: {audio_path}")
+            logging.error(f"錯誤：音頻文件不存在於此路徑: {audio_path}")
             return
 
         try:
-            print(f"\n--- 正在加載音頻文件: {audio_path} ---")
+            logging.info(f"\n--- 正在加載音頻文件: {audio_path} ---")
             audio = AudioSegment.from_file(audio_path)
-            print("音頻加載成功。")
+            logging.info("音頻加載成功。")
         except Exception as e:
-            print(f"錯誤：無法加載音頻文件 {audio_path} - {e}")
+            logging.error(f"錯誤：無法加載音頻文件 {audio_path} - {e}")
             return
 
-        print("\n--- 步驟 1: 標準化音頻響度 ---")
+        logging.info("\n--- 步驟 1: 標準化音頻響度 ---")
         # 調用新的響度標準化方法
         normalized_audio = self._normalize_audio_to_target_loudness(audio)
         
@@ -101,12 +113,12 @@ class AudioSplitter:
         data = np.array(normalized_audio.get_array_of_samples())
         frame_rate = normalized_audio.frame_rate
         
-        print("\n--- 步驟 2: 估計噪聲 RMS ---")
+        logging.info("\n--- 步驟 2: 估計噪聲 RMS ---")
         # 假設音頻開頭的一部分是純噪聲 (已經是標準化後的數據)
         noise_samples_count = int(frame_rate * (self.noise_estimation_ms / 1000.0))
         
         if noise_samples_count == 0:
-            print("警告：噪聲估計時間太短，無法估計噪聲。請增加 noise_estimation_ms。")
+            logging.warning("警告：噪聲估計時間太短，無法估計噪聲。請增加 noise_estimation_ms。")
             return
         
         # 確保不會超出音頻長度
@@ -114,21 +126,21 @@ class AudioSplitter:
         noise_data = data[:noise_samples_count]
         noise_rms = self._calculate_rms(noise_data)
 
-        print(f"響度標準化後估計的噪聲 RMS (基線): {noise_rms:.6f}")
+        logging.info(f"響度標準化後估計的噪聲 RMS (基線): {noise_rms:.6f}")
 
         if noise_rms == 0:
-            print("警告：估計的噪聲 RMS 為零。這可能意味著音頻開頭沒有噪聲或文件有問題。將噪聲 RMS 設置為一個非常小的非零值。")
+            logging.warning("警告：估計的噪聲 RMS 為零。這可能意味著音頻開頭沒有噪聲或文件有問題。將噪聲 RMS 設置為一個非常小的非零值。")
             noise_rms = 1e-9 # 設置一個非常小的非零值來避免後續計算問題
 
         frame_samples = int(frame_rate * (self.frame_ms / 1000.0))
         if frame_samples == 0:
-            print("警告：幀長度太短，無法處理。請增加 frame_ms。")
+            logging.warning("警告：幀長度太短，無法處理。請增加 frame_ms。")
             return
 
         current_segment_start_ms = None
         segments = []
 
-        print(f"\n--- 步驟 3: 根據 SNR 閾值 ({self.snr_threshold_db} dB) 進行音頻分割 ---")
+        logging.info(f"\n--- 步驟 3: 根據 SNR 閾值 ({self.snr_threshold_db} dB) 進行音頻分割 ---")
 
         for i in range(0, len(data), frame_samples):
             current_ms = (i / frame_rate) * 1000
@@ -163,12 +175,12 @@ class AudioSplitter:
         if current_segment_start_ms is not None:
             segments.append((current_segment_start_ms, len(normalized_audio)))
 
-        print(f"\n--- 步驟 4: 保存裁切後的音頻片段 ---")
+        logging.info(f"\n--- 步驟 4: 保存裁切後的音頻片段 ---")
         if not segments:
-            print("未檢測到符合 SNR 條件的音頻段。沒有文件被保存。")
+            logging.info("未檢測到符合 SNR 條件的音頻段。沒有文件被保存。")
             return
 
-        print(f"檢測到 {len(segments)} 個符合條件的音頻段。")
+        logging.info(f"檢測到 {len(segments)} 個符合條件的音頻段。")
 
         for idx, (start_ms, end_ms) in enumerate(segments):
             # 稍微擴展片段以包含更多上下文，避免語音被切掉一部分
@@ -180,47 +192,54 @@ class AudioSplitter:
             base_name = os.path.splitext(os.path.basename(audio_path))[0]
             output_filename = os.path.join(self.output_dir, f"{base_name}_{idx+1:02d}.wav")
             chunk.export(output_filename, format="wav")
-            print(f"保存片段 {idx+1}: {start_ms:.0f} ms - {end_ms:.0f} ms 到 {output_filename}")
+            logging.info(f"保存片段 {idx+1}: {start_ms:.0f} ms - {end_ms:.0f} ms 到 {output_filename}")
 
 # --- 使用範例 ---
 if __name__ == "__main__":
-    # 這裡我們生成一個測試音頻，包含噪音、信號和結尾噪音，方便您測試
-    from pydub.generators import Sine
-    
-    # 創建一個安靜的開始（低音量噪音），dBFS值會影響初始的響度
-    noise_segment_test = AudioSegment.silent(duration=2000, frame_rate=44100).set_frame_rate(44100) - 30 # -30 dBFS 的靜音
-    
-    # 創建一個信號部分（低音量正弦波），dBFS值會影響初始的響度
-    signal_segment_test = Sine(440).to_audio_segment(duration=3000, volume=-40).set_frame_rate(44100) # -40 dBFS 的正弦波
-    
-    # 將信號與一些背景噪音混合
-    background_noise = AudioSegment.silent(duration=3000, frame_rate=44100).set_frame_rate(44100) - 60 # 更低的背景噪音
-    mixed_signal_test = signal_segment_test.overlay(background_noise)
-    
-    # 創建一個安靜的結束
-    end_noise_test = AudioSegment.silent(duration=2000, frame_rate=44100).set_frame_rate(44100) - 30
-    
-    test_audio_path_generated = "test_audio_for_class_example_loudness_norm.wav"
-    (noise_segment_test + mixed_signal_test + end_noise_test).export(test_audio_path_generated, format="wav")
-    print(f"已創建測試音頻文件: {test_audio_path_generated}")
-
-    # 實例化 AudioSplitter
-    # 您可以根據需要調整這些參數
-    splitter = AudioSplitter(
-        snr_threshold_db=30,      # SNR 閾值：高於 30dB 才裁切 (您可以嘗試降低這個值)
-        frame_ms=50,              # 每 50 毫秒計算一次 SNR
-        noise_estimation_ms=500,  # 使用音頻前 500 毫秒估計噪聲
-        target_dbfs=-40.0,        # 標準化音頻到 -40 dBFS 的響度
-        output_dir="segments_loudness_processed" # 輸出文件夾名稱
-    )
-
-    # 讓使用者輸入音檔位置
-    while True:
-        user_audio_path = input("\n請輸入您要處理的音頻文件路徑 (例如: my_audio.wav)，或輸入 'q' 退出: ")
-        if user_audio_path.lower() == 'q':
-            break
+    try:
+        # 這裡我們生成一個測試音頻，包含噪音、信號和結尾噪音，方便您測試
         
-        splitter.split_audio(user_audio_path)
-        print("\n--- 音頻處理完成 ---")
+        # 創建一個安靜的開始（低音量噪音），dBFS值會影響初始的響度
+        noise_segment_test = AudioSegment.silent(duration=2000, frame_rate=44100).set_frame_rate(44100) - 30 # -30 dBFS 的靜音
+        
+        # 創建一個信號部分（低音量正弦波），dBFS值會影響初始的響度
+        signal_segment_test = Sine(440).to_audio_segment(duration=3000, volume=-40).set_frame_rate(44100) # -40 dBFS 的正弦波
+        
+        # 將信號與一些背景噪音混合
+        background_noise = AudioSegment.silent(duration=3000, frame_rate=44100).set_frame_rate(44100) - 60 # 更低的背景噪音
+        mixed_signal_test = signal_segment_test.overlay(background_noise)
+        
+        # 創建一個安靜的結束
+        end_noise_test = AudioSegment.silent(duration=2000, frame_rate=44100).set_frame_rate(44100) - 30
+        
+        test_audio_path_generated = "test_audio_for_class_example_loudness_norm.wav"
+        (noise_segment_test + mixed_signal_test + end_noise_test).export(test_audio_path_generated, format="wav")
+        logging.info(f"已建立測試音頻文件: {test_audio_path_generated}")
 
-    print("程式結束。")
+        # 實例化 AudioSplitter
+        # 您可以根據需要調整這些參數
+        splitter = AudioSplitter(
+            snr_threshold_db=30,      # SNR 閾值：高於 30dB 才裁切 (您可以嘗試降低這個值)
+            frame_ms=10,              # 每 50 毫秒計算一次 SNR
+            noise_estimation_ms=500,  # 使用音頻前 500 毫秒估計噪聲
+            target_dbfs=-40.0,        # 標準化音頻到 -40 dBFS 的響度
+            output_dir="segments_loudness_processed" # 輸出文件夾名稱
+        )
+
+        # 讓使用者輸入音檔位置
+        while True:
+            user_audio_path = input("\n請輸入您要處理的音頻文件路徑 (例如: my_audio.wav)，或輸入 'q' 退出: ")
+            if user_audio_path.lower() == 'q':
+                break
+            
+            splitter.split_audio(user_audio_path)
+            logging.info("\n--- 音頻處理完成 ---")
+
+    except NameError:
+        # 這個錯誤會在 pydub 或 numpy 未安裝時，因為 import 失敗而觸發
+        # 由於我們在檔案開頭已經給了提示，這裡就不再重複
+        pass
+    except Exception as e:
+        logging.error(f"執行期間發生未預期的錯誤: {e}")
+
+    logging.info("程式結束。")
